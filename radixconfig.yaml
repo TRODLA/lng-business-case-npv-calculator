@@ -1,0 +1,52 @@
+apiVersion: radix.equinor.com/v1
+kind: RadixApplication
+
+metadata:
+  name: lng-business-case-npv-calculator     # 👈 must be lowercase, no spaces
+
+spec:
+  environments:
+    - name: dev
+      build:
+        from: main
+    - name: prod
+      build:
+        from: main
+
+  components:
+    - name: dashapp           # 👈 your component name
+      src: "."
+      
+      authentication:
+        oauth2:
+          clientId: "e02178ec-0c31-4eee-9288-6f5fa44c9c2f"
+          scope: "openid profile email offline_access"
+          setXAuthRequestHeaders: true
+          setAuthorizationHeader: true
+          sessionStoreType: systemManaged
+                          # 👈 build from your repo
+      public: true            # 👈 exposes a public URL
+      ports:
+        - name: http
+          port: 8501          # 👈 must match app.run(port=8050)
+      publicPort: http
+      
+      environmentConfig:
+        - environment: dev
+          replicas: 1
+          resources:
+            requests:
+              memory: "16384Mi"
+              cpu: "300m"
+            limits:
+              memory: "16384Mi"
+              cpu: "300m"
+        - environment: prod
+          replicas: 2
+          resources:
+            requests:
+              memory: "16384Mi"
+              cpu: "300m"
+            limits:
+              memory: "16384Mi"
+              cpu: "300m"
