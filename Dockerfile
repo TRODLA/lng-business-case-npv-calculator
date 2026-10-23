@@ -1,24 +1,26 @@
 FROM python:3.12-slim
 
-# Create non-root user with fixed UID
-RUN useradd -u 1001 -m appuser
-
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    MPLCONFIGDIR=/tmp/matplotlib
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt /app/requirements.txt
+RUN python -m pip install --upgrade pip \
+    && python -m pip install -r /app/requirements.txt \
+    && groupadd --gid 1001 appgroup \
+    && useradd --uid 1001 --gid 1001 --no-create-home appuser \
+    && mkdir -p /tmp/matplotlib \
+    && chown -R 1001:1001 /app /tmp/matplotlib
 
-COPY . .
+COPY --chown=1001:1001 app.py /app/app.py
 
-# Set correct ownership
-RUN chown -R 1001:1001 /app
-
-# ✅ Use numeric UID (THIS IS THE FIX)
-USER 1001
-
+USER 1001:1001
 EXPOSE 8501
 
-CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)" || exit 1
+
+CMD ["python", "-m", "streamlit", "run", "/app/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false"]
