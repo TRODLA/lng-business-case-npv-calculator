@@ -19,7 +19,7 @@ spec:
       
       authentication:
         oauth2:
-          clientId: "e02178ec-0c31-4eee-9288-6f5fa44c9c2f"
+          clientId: "371752e9-7a52-4990-ad9a-1077ea93563d"
           scope: "openid profile email offline_access"
           setXAuthRequestHeaders: true
           setAuthorizationHeader: true
