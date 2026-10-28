@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """LNG Business Case | redesigned single-file Streamlit application.
-Run: python -m streamlit run lng_business_case_studio_v29.py
+Run: python -m streamlit run lng_business_case_studio_v33.py
 Dependencies: streamlit>=1.41, pandas, plotly, numpy, python-pptx, matplotlib.
-V29: V27 baseline plus split fixed/CPI liquefaction boil-off, enhanced matched-formula display, shipping horizon capped at 2050 and deployment-safe input styling.
+V33: V32 baseline plus independent shipping CPI base year and annual shipping inflation curve.
 Separate leg CPI timing, CCT2 preset, annual-average cargo programme,
 component-matched sales formula and explicit annual/PV hedge reconciliation.
 Optional offline brand asset: equinor_logo.svg or equinor_logo.png beside this file.
@@ -104,20 +104,29 @@ def brent(raw):
 def shipping(raw):
  c=xcells(raw,'Interface',lambda r,k:(r==45 and k==13) or (41<=r<=43 and 2<=k<=3) or (79<=r<=99 and 9<=k<=250));ys={}
  for k in range(9,251):
-  for r in range(79,83):
-   y=yr(c.get(f'{col(k)}{r}'))
-   if y:
-    if y<=2050:ys[k]=y
-    break
+  # Row 79 is the authoritative year header. Never infer a shipping year
+  # from rows 80-82 because that can attach row-97 capex to the wrong year.
+  y=yr(c.get(f'{col(k)}79'))
+  if y and y<=2050:ys[k]=y
  def number(ref):
   v=c.get(ref)
   if not isinstance(v,(int,float)) or isinstance(v,bool):raise ValueError(f'Interface!{ref}: missing numeric cached value. Recalculate and save the workbook in Excel.')
   return float(v)
  out=[]
- for k,y in ys.items():out.append({'Year':y,'Shipping Opex USD/MMBtu':sum(number(f'{col(k)}{r}') for r in [92,93,94,95,96,98]),'Shipping Capex USD/MMBtu':number(f'{col(k)}97')})
- if not out:raise ValueError('No shipping years found in Interface rows 79-82.')
+ for k,y in ys.items():out.append({'Year':y,'Source Column':col(k),'Shipping Opex USD/MMBtu':sum(number(f'{col(k)}{r}') for r in [92,93,94,95,96,98]),'Shipping Capex USD/MMBtu':number(f'{col(k)}97')})
+ if not out:raise ValueError('No shipping years through 2050 found in Interface row 79.')
  df=pd.DataFrame(out)
- if df.Year.duplicated().any():raise ValueError('Duplicate shipping years. Expected one annual column per year.')
+ source_columns={int(y):list(g['Source Column']) for y,g in df.groupby('Year')}
+ duplicate_counts=df.groupby('Year').size()
+ duplicate_years={int(y):int(n) for y,n in duplicate_counts.items() if n>1}
+ if duplicate_years:
+  # Repeated authoritative row-79 years are consolidated only after each
+  # value has been read from its own same-column source cells.
+  df=df.groupby('Year',as_index=False)[['Shipping Opex USD/MMBtu','Shipping Capex USD/MMBtu']].mean()
+ else:
+  df=df[['Year','Shipping Opex USD/MMBtu','Shipping Capex USD/MMBtu']]
+ df.attrs['source_columns_by_year']=source_columns
+ if duplicate_years:df.attrs['duplicate_shipping_years']=duplicate_years
  b=number('M45');b=b/100 if b>1 else b
  if not 0<=b<1:raise ValueError('Physical boil-off must be between 0% and less than 100%.')
  routes=[]
@@ -151,10 +160,11 @@ def seed(years,n,mode,months):
    for i in range(n):r[allowed[i%len(allowed)]]+=1
   out.append(r)
  return pd.DataFrame(out)
-def calculate(schedule,prices,pur,sal,sales_cpi,purchase_cpi,sales_base,purchase_base,discount_year,disc,ext,cargo,boil,shipdf,flat_opex,flat_capex,shipmode,price_mode='Scheduled quarterly prices',scales=(1,1,1,1),epa_cpi=None,epa_real_base=2026):
+def calculate(schedule,prices,pur,sal,sales_cpi,purchase_cpi,shipping_cpi,sales_base,purchase_base,shipping_base,discount_year,disc,ext,cargo,boil,shipdf,flat_opex,flat_capex,shipmode,price_mode='Scheduled quarterly prices',scales=(1,1,1,1),epa_cpi=None,epa_real_base=2026):
  import math
  ps,ss,hs,es=scales
  if epa_cpi is None:raise ValueError('EPA real-to-nominal CPI factors are required. Recalculate with an EPA real-price reference year.')
+ if shipping_cpi is None:raise ValueError('Shipping CPI factors are required. Recalculate with a shipping base year.')
  if not 0<=boil<1:raise ValueError('Physical boil-off must be between 0% and less than 100%.')
  if cargo<=0:raise ValueError('Loaded cargo size must be positive.')
  if disc<=-1:raise ValueError('Discount rate must exceed -100%.')
@@ -202,10 +212,10 @@ def calculate(schedule,prices,pur,sal,sales_cpi,purchase_cpi,sales_base,purchase
     if y not in ls:raise ValueError(f'Missing shipping year {y}.')
     raw_o=float(ls[y]['Shipping Opex USD/MMBtu']);raw_ca=float(ls[y]['Shipping Capex USD/MMBtu'])
    else:raw_o=flat_opex;raw_ca=flat_capex
-   o=raw_o*purchase_cpi[y]*hs*deliv;ca=raw_ca*hs*deliv;eu=ext*es*deliv
+   o=raw_o*shipping_cpi[y]*hs*deliv;ca=raw_ca*shipping_cpi[y]*hs*deliv;eu=ext*es*deliv
    income=rev+bc+fixed_rev+cpi_rev+eu;cost=purchase+bog_cost+liq_fixed+liq_cpi+liq_bog+o+ca
    cash=income-cost;df=(1+disc)**(y-int(discount_year))
-   row={'Year':y,'Month':m,'Quarter':q,'Price Mode':price_mode,'Cargoes':n,'Loaded MMBtu':loaded,'Boiled-off MMBtu':lost,'Delivered MMBtu':deliv,'EPA Base Volume MMBtu':deliv,'EPA Purchase Base Volume MMBtu':loaded,'DTL':ratio,'Physical Boil-off Fraction':boil,'BoG Index Coefficient Sales':sal['slope']-1,'BoG Index Coefficient Purchase':pur['slope']/ratio-1,'EPA Sales Price Real':si_real,'EPA Purchase Price Real':pi_real,'EPA Inflation Factor':factor,'EPA Sales Price':si,'EPA Purchase Price':pi,'Sales CPI Factor':sales_cpi[y],'Purchase CPI Factor':purchase_cpi[y],'Shipping CPI Factor':purchase_cpi[y],'Raw Shipping Opex USD/MMBtu':raw_o,'Raw Shipping Capex USD/MMBtu':raw_ca,'Discount Factor':df,'Sales Revenue USD':rev,'Boil-off Compensation Revenue USD':bc,'Fixed Revenue USD':fixed_rev,'CPI Revenue USD':cpi_rev,'Extrinsic Revenue USD':eu,'Purchase Base Cost USD':purchase,'Boil-off Cost USD':bog_cost,'Liquefaction Fixed Cost USD':liq_fixed,'Liquefaction CPI Cost USD':liq_cpi,'Liquefaction Boil-off Cost USD':liq_bog,'Liquefaction Boil-off Fixed Cost USD':liq_bog_fixed,'Liquefaction Boil-off CPI Cost USD':liq_bog_cpi,'Shipping Opex USD':o,'Shipping Capex USD':ca,'Total Income USD':income,'Total Cost USD':cost,'Cash Flow USD':cash}
+   row={'Year':y,'Month':m,'Quarter':q,'Price Mode':price_mode,'Cargoes':n,'Loaded MMBtu':loaded,'Boiled-off MMBtu':lost,'Delivered MMBtu':deliv,'EPA Base Volume MMBtu':deliv,'EPA Purchase Base Volume MMBtu':loaded,'DTL':ratio,'Physical Boil-off Fraction':boil,'BoG Index Coefficient Sales':sal['slope']-1,'BoG Index Coefficient Purchase':pur['slope']/ratio-1,'EPA Sales Price Real':si_real,'EPA Purchase Price Real':pi_real,'EPA Inflation Factor':factor,'EPA Sales Price':si,'EPA Purchase Price':pi,'Sales CPI Factor':sales_cpi[y],'Purchase CPI Factor':purchase_cpi[y],'Shipping CPI Factor':shipping_cpi[y],'Raw Shipping Opex USD/MMBtu':raw_o,'Raw Shipping Capex USD/MMBtu':raw_ca,'Nominal Shipping Opex USD/MMBtu':raw_o*shipping_cpi[y],'Nominal Shipping Capex USD/MMBtu':raw_ca*shipping_cpi[y],'Discount Factor':df,'Sales Revenue USD':rev,'Boil-off Compensation Revenue USD':bc,'Fixed Revenue USD':fixed_rev,'CPI Revenue USD':cpi_rev,'Extrinsic Revenue USD':eu,'Purchase Base Cost USD':purchase,'Boil-off Cost USD':bog_cost,'Liquefaction Fixed Cost USD':liq_fixed,'Liquefaction CPI Cost USD':liq_cpi,'Liquefaction Boil-off Cost USD':liq_bog,'Liquefaction Boil-off Fixed Cost USD':liq_bog_fixed,'Liquefaction Boil-off CPI Cost USD':liq_bog_cpi,'Shipping Opex USD':o,'Shipping Capex USD':ca,'Total Income USD':income,'Total Cost USD':cost,'Cash Flow USD':cash}
    for key,value in list(row.items()):
     if key.endswith(' USD'):row['PV '+key]=value/df
    row['PV Delivered MMBtu']=deliv/df
@@ -325,7 +335,7 @@ def ppt_bytes(d,a,inp):
   return sl
  sl=slide('LNG Business Case | Investment overview')
  box=sl.shapes.add_textbox(Inches(.8),Inches(2.0),Inches(11.8),Inches(3.6));tf=box.text_frame
- lines=[f"NPV to {inp['discount_year']}  {money(t['npv'])}",f"Sales fee CPI from {inp['sales_base']+1}; purchase CPI from {inp['purchase_base']}; EPA real year {inp['epa_real_base']}",f"NPV / MMBtu  {money(t['npv']/t['volume'],'$/MMBtu')}",f"PV volume  {t['volume']/1e6:,.1f} TBtu",f"Purchase: {formula_text('pur',inp['pur'])}",f"Sales: {formula_text('sal',inp['sal'])}"]
+ lines=[f"NPV to {inp['discount_year']}  {money(t['npv'])}",f"Sales fee CPI from {inp['sales_base']+1}; purchase CPI from {inp['purchase_base']}; shipping CPI base {inp['shipping_base']}; EPA real year {inp['epa_real_base']}",f"NPV / MMBtu  {money(t['npv']/t['volume'],'$/MMBtu')}",f"PV volume  {t['volume']/1e6:,.1f} TBtu",f"Purchase: {formula_text('pur',inp['pur'])}",f"Sales: {formula_text('sal',inp['sal'])}"]
  for j,line in enumerate(lines):
   p=tf.paragraphs[0] if j==0 else tf.add_paragraph();p.text=line;p.font.size=Pt(25 if j<2 else 17);p.font.color.rgb=RGBColor(239,245,249)
  q=sensitivity_rows(inp,[10]*4)
@@ -401,10 +411,10 @@ def apply_matched_sales():
   st.session_state['sales_preset']='Custom'
 
 # ------------------------- Theme and application shell -------------------
-if st.session_state.get('studio_engine_version')!='v29':
+if st.session_state.get('studio_engine_version')!='v33':
  for old_key in ['ship','studio_result','studio_ppt','studio_be','studio_hedge']:
   st.session_state.pop(old_key,None)
- st.session_state.studio_engine_version='v29'
+ st.session_state.studio_engine_version='v33'
 with st.container(key='masthead'):
  brand_col,theme_col=st.columns([5,1],vertical_alignment='center')
  with brand_col:brand_slot=st.empty()
@@ -576,15 +586,16 @@ with setup_tab:
     a,b=st.columns(2)
     start=int(a.number_input('First cargo year',2020,2100,2028,key='start_year'))
     end=int(b.number_input('Last cargo year',2020,2100,2037,key='end_year'))
-    a,b=st.columns(2)
+    a,b,c=st.columns(3)
     sales_base=int(a.number_input('Sales base year',2000,2100,2026,key='sales_base_year',help='First included CPI rate is sales base year + 1.'))
-    purchase_base=int(b.number_input('Purchase base year',2000,2100,2026,key='purchase_base_year',help='First included CPI rate is the purchase base year itself. Also used for shipping opex.'))
+    purchase_base=int(b.number_input('Purchase base year',2000,2100,2026,key='purchase_base_year',help='Reference for purchase-side CPI-linked liquefaction fees only.'))
+    shipping_base=int(c.number_input('Shipping base year',2000,2100,2026,key='shipping_base_year',help='Real shipping opex and capex are converted to nominal using a separate factor equal to 1.0 in this year.'))
     discount_year=int(st.number_input('Discount back to',2000,2100,2026,step=1,key='discount_year',help='All cash flows and PV volumes are discounted to this year. Does not change CPI.'))
     epa_real_base=int(st.number_input('EPA prices: real reference year',2000,2100,2026,step=1,key='epa_real_base',help='Uploaded EPA prices are real in this year. Both EPA legs and BoG decomposition use prices inflated to the cash-flow year. Independent of fee base years and Discount back to.'))
     years=list(range(start,end+1))
     if end<start:st.error('Last cargo year must be on or after first cargo year.')
     mode=st.radio('Annual CPI',['Fixed annual CPI','Preset CPI curve','Specific CPI by year'],key='cpi_mode')
-    cpi_years=list(range(min(years+[sales_base,purchase_base,epa_real_base]),max(years+[sales_base+1,purchase_base,epa_real_base])+1))
+    cpi_years=list(range(min(years+[sales_base,purchase_base,shipping_base,epa_real_base]),max(years+[sales_base+1,purchase_base,shipping_base,epa_real_base])+1))
     if mode=='Fixed annual CPI':
      p=st.number_input('Annual CPI (%)',value=2.,step=.1,key='cpi_fixed')/100;rates={y:p for y in cpi_years}
     elif mode=='Preset CPI curve':
@@ -592,11 +603,11 @@ with setup_tab:
      rates={y:(0 if p=='No inflation' else .02) for y in cpi_years}
      if p.startswith('2.7'):rates[cpi_years[0]]=.027;rates[cpi_years[0]+1]=.024
     else:
-     cd=st.data_editor(pd.DataFrame({'Year':cpi_years,'CPI %':2.}),hide_index=True,key=f'cpi_curve_{start}_{end}_{sales_base}_{purchase_base}_{epa_real_base}',use_container_width=True)
+     cd=st.data_editor(pd.DataFrame({'Year':cpi_years,'CPI %':2.}),hide_index=True,key=f'cpi_curve_{start}_{end}_{sales_base}_{purchase_base}_{shipping_base}_{epa_real_base}',use_container_width=True)
      rates={int(r.Year):float(r['CPI %'])/100 for _,r in cd.iterrows()}
-    try:sales_cpi=cpif(years,sales_base,rates);purchase_cpi=cpif(years,purchase_base-1,rates);epa_cpi=cpif(years,epa_real_base,rates);cpi_error=None
-    except Exception as e:sales_cpi={};purchase_cpi={};epa_cpi={};cpi_error=str(e);st.error(f'CPI curve: {e}')
-    st.caption(f'Sales: first CPI rate {sales_base+1}. Purchase and shipping opex: first CPI rate {purchase_base}. EPA prices: real {epa_real_base} converted to nominal each year. Discount back to: {discount_year}, independent of CPI.')
+    try:sales_cpi=cpif(years,sales_base,rates);purchase_cpi=cpif(years,purchase_base-1,rates);shipping_cpi=cpif(years,shipping_base,rates);epa_cpi=cpif(years,epa_real_base,rates);cpi_error=None
+    except Exception as e:sales_cpi={};purchase_cpi={};shipping_cpi={};epa_cpi={};cpi_error=str(e);st.error(f'CPI curve: {e}')
+    st.caption(f'Sales: first CPI rate {sales_base+1}. Purchase fee CPI: first rate {purchase_base}. Shipping CPI factor: 1.0 in {shipping_base}, then changes annually. EPA prices: real {epa_real_base} converted to nominal each year. Discount back to: {discount_year}, independent of CPI.')
  frames=[st.session_state[x] for x in ['gas','brent'] if x in st.session_state]
  prices=pd.concat(frames,ignore_index=True) if frames else None
  markets=sorted(prices.Market.unique()) if prices is not None else ['Upload prices']
@@ -649,8 +660,8 @@ with setup_tab:
     shipdf=pd.DataFrame(columns=['Year','Shipping Opex USD/MMBtu','Shipping Capex USD/MMBtu'])
     if shipmode=='Flat fixed assumption':
      a,b=st.columns(2)
-     fo=float(a.number_input('Shipping Opex USD/MMBtu',0.,value=.16,step=.01,key='flat_opex'))
-     fc=float(b.number_input('Shipping Capex USD/MMBtu',0.,value=.57,step=.01,key='flat_capex'))
+     fo=float(a.number_input('Real shipping Opex USD/MMBtu',0.,value=.16,step=.01,key='flat_opex'))
+     fc=float(b.number_input('Real shipping Capex USD/MMBtu',0.,value=.57,step=.01,key='flat_capex'))
      boil=float(st.number_input('Physical boil-off %',0.,99.,1.5,.1,key='physical_boil'))/100
      shipdf=pd.DataFrame({'Year':years,'Shipping Opex USD/MMBtu':fo,'Shipping Capex USD/MMBtu':fc})
     else:
@@ -660,9 +671,13 @@ with setup_tab:
       except Exception as e:st.error(f'Shipping workbook: {e}')
      if 'ship' in st.session_state:
       shipdf,boil,routes=st.session_state.ship;st.caption(f"Loaded: {st.session_state.get('ship_name','Shipping workbook')}")
-     st.caption(f'Interface: capex row 97; opex rows 92-96 + 98; years through 2050 only. First shipping CPI rate: {purchase_base}. Boil-off: M45.')
+      duplicate_years=shipdf.attrs.get('duplicate_shipping_years',{})
+      if duplicate_years:
+       duplicate_text=', '.join(f'{y} ({n} columns)' for y,n in sorted(duplicate_years.items()))
+       st.warning(f'Repeated shipping years were consolidated to one annual value using the mean: {duplicate_text}. Review the annual shipping table after calculation.')
+     st.caption(f'Interface: year row 79; capex row 97; opex rows 92-96 + 98, always from the same column; years through 2050 only. Repeated row-79 years are averaged. Shipping CPI base year: {shipping_base} (factor 1.0). Boil-off: M45.')
      if not routes.empty:st.dataframe(routes,hide_index=True,use_container_width=True)
-     st.caption('Route flags are informational only. Uploaded opex is treated as a pre-CPI source value.')
+     st.caption('Route flags are informational only. Uploaded opex and capex are treated as real pre-CPI source values; both are multiplied by the independent annual shipping CPI factor.')
     st.metric('Sales cargo size',f'{cargo*(1-boil):,.0f} MMBtu',f'{boil:.3%} physical boil-off',delta_color='off')
   with right:
    with st.container(border=True):
@@ -670,7 +685,7 @@ with setup_tab:
     disc=float(st.number_input('Discount rate %',0.,100.,8.,.25,key='discount_rate'))/100
     ext=float(st.number_input('Extrinsic USD/MMBtu',0.,20.,0.,.05,key='extrinsic'))
     st.caption('Annual income minus annual cost, discounted to the Discount back to year. No tax is applied.')
- inp=dict(schedule=schedule,prices=prices,pur=pur,sal=sal,sales_cpi=sales_cpi,purchase_cpi=purchase_cpi,sales_base=sales_base,purchase_base=purchase_base,discount_year=discount_year,disc=disc,ext=ext,cargo=cargo,boil=boil,shipdf=shipdf,flat_opex=fo,flat_capex=fc,shipmode=shipmode,price_mode=price_mode,epa_cpi=epa_cpi,epa_real_base=epa_real_base)
+ inp=dict(schedule=schedule,prices=prices,pur=pur,sal=sal,sales_cpi=sales_cpi,purchase_cpi=purchase_cpi,shipping_cpi=shipping_cpi,sales_base=sales_base,purchase_base=purchase_base,shipping_base=shipping_base,discount_year=discount_year,disc=disc,ext=ext,cargo=cargo,boil=boil,shipdf=shipdf,flat_opex=fo,flat_capex=fc,shipmode=shipmode,price_mode=price_mode,epa_cpi=epa_cpi,epa_real_base=epa_real_base)
  ready=prices is not None and bool(years) and cpi_error is None and not (st.session_state.get('purchase_preset')=='CCT2' and hh is None)
  a,b=st.columns([1,2],vertical_alignment='center')
  with a:calculate_clicked=st.button('Calculate NPV',type='primary',use_container_width=True,disabled=not ready,key='calculate_setup')
@@ -689,7 +704,7 @@ current_sig=case_signature({'valuation':inp,'routes':routes})
 def execute_case():
  try:
   d,a=calculate(**inp)
-  st.session_state.studio_result={'detail':d,'annual':a,'inputs':copy.deepcopy(inp),'signature':current_sig,'routes':routes.copy()}
+  st.session_state.studio_result={'detail':d,'annual':a,'inputs':copy.deepcopy(inp),'signature':current_sig,'routes':routes.copy(),'duplicate_shipping_years':copy.deepcopy(shipdf.attrs.get('duplicate_shipping_years',{})),'shipping_source_columns':copy.deepcopy(shipdf.attrs.get('source_columns_by_year',{}))}
   st.session_state.pop('studio_ppt',None);st.session_state.pop('studio_be',None);st.session_state.pop('studio_hedge',None)
   st.rerun()
  except Exception as e:st.error(f'Could not calculate: {e}')
@@ -793,7 +808,7 @@ with prices_tab:
   table(v)
 
 with shipping_tab:
- section('Logistics economics','Shipping cost structure','CPI-adjusted opex and non-CPI capex, reconciled to delivered volume.')
+ section('Logistics economics','Shipping cost structure','Real source opex and capex are both CPI-adjusted to nominal values and reconciled to delivered volume.')
  if not result:st.info('Calculate a case to view shipping results.')
  else:
   sd=d.groupby('Year',as_index=False).agg({'Delivered MMBtu':'sum','Shipping Opex USD':'sum','Shipping Capex USD':'sum'})
@@ -815,6 +830,15 @@ with shipping_tab:
   if not result.get('routes',pd.DataFrame()).empty:
    st.caption('Calculated-case route flags (informational only; not used in valuation).')
    st.dataframe(result['routes'],hide_index=True,use_container_width=True)
+  duplicate_years=result.get('duplicate_shipping_years',{})
+  if duplicate_years:
+   duplicate_text=', '.join(f'{y} ({n} columns)' for y,n in sorted(duplicate_years.items()))
+   st.info(f'Source workbook consolidation: {duplicate_text}. Annual opex and capex are the mean of the repeated source columns.')
+  source_columns=result.get('shipping_source_columns',{})
+  if source_columns:
+   source_table=pd.DataFrame([{'Year':y,'Interface source column(s)':', '.join(cols)} for y,cols in sorted(source_columns.items())])
+   st.caption('Shipping source mapping: years are read exclusively from Interface row 79; costs come from the same column.')
+   st.dataframe(source_table,hide_index=True,use_container_width=True)
   section('Underlying assumptions','Annual shipping table')
   table(sd)
 
@@ -828,14 +852,14 @@ with sens_tab:
    changes=[cols[j].slider(label,0,20,10,key=f'sensitivity_{j}') for j,label in enumerate(['Sales price change (%)','Purchase price change (%)','Shipping cost change (%)','Extrinsic value change (%)'])]
   q=sensitivity_rows(ci,changes)
   st.plotly_chart(sensitivity_chart(q,t,unit),use_container_width=True,theme=None)
-  st.caption('Sales changes scale EPA sales, BoG income and fixed income. Purchase changes scale EPA purchase, BoG cost and all liquefaction fees. Shipping changes scale CPI-adjusted opex and capex. Every scenario uses the calculated snapshot and its Discount back to year.')
+  st.caption('Sales changes scale EPA sales, BoG income and fixed income. Purchase changes scale EPA purchase, BoG cost and all liquefaction fees. Shipping changes scale both CPI-adjusted opex and CPI-adjusted capex. Every scenario uses the calculated snapshot and its Discount back to year.')
 
 with explanation_tab:
  section('Calculation audit trail','Explanation','The charts, break-even solver and presentation use the same calculated snapshot.')
  st.markdown("""
 **Independent years.** Discount back to affects only PV calculations. Sales base year and Purchase base year retain the existing fee/shipping CPI logic. EPA prices have a separate real reference year and are inflated to nominal before the commodity decomposition.
 
-**CPI timing.** Sales: the first included annual CPI rate is sales base year + 1. Purchase and shipping opex: the first included annual CPI rate is purchase base year itself. For base year 2022, sales uses the product of (1+CPI) for 2023 through the cash-flow year; costs use 2022 through the cash-flow year. A 2022 purchase fee is therefore escalated by the 2022 CPI rate in 2022. Years before the reference point are deflated. This explicitly replaces the previous +2/+1 anchors.
+**CPI timing.** Sales: the first included annual CPI rate is sales base year + 1. Purchase fees: the first included annual CPI rate is purchase base year itself. Shipping uses its own base year, with factor 1.0 in that year and cumulative annual factors thereafter. For base year 2022, sales uses the product of (1+CPI) for 2023 through the cash-flow year; costs use 2022 through the cash-flow year. A 2022 purchase fee is therefore escalated by the 2022 CPI rate in 2022. Years before the reference point are deflated. This explicitly replaces the previous +2/+1 anchors.
 
 **Volumes and non-duplicative commodity decomposition.** Loaded/bought = cargo count x loaded cargo size; delivered = loaded x (1-b). Uploaded real EPA prices are first inflated to nominal using the separate EPA real reference year. The waterfall then splits each full contractual formula into two rows without changing total economics. EPA sales = nominal sales EPA x delivered volume. BoG income = nominal sales EPA x (sales slope - 1) x delivered volume. EPA purchase = nominal purchase EPA x delivered volume. BoG cost = nominal purchase EPA x (purchase slope x loaded volume - delivered volume). Therefore EPA sales and EPA purchase match when their nominal indices match, while BoG income and BoG cost match when the slopes compensate correctly for volume loss. Combined sales still equal nominal EPA x sales slope x delivered volume; combined purchase still equals nominal EPA x purchase slope x loaded volume. Liq. boiled off remains unchanged and covers only liquefaction fees on lost volume.
 
@@ -843,7 +867,7 @@ with explanation_tab:
 
 **Liquefaction boiled off.** The total calculation remains [(fixed fee + CPI-adjusted fee)/(1-b) - (fixed fee + CPI-adjusted fee)] x delivered volume. V29 displays the exact same total as two components: Liq. BoG no CPI = fixed liquefaction fee x boiled-off volume; Liq. BoG CPI = CPI-adjusted liquefaction fee x boiled-off volume. Their sum equals the former single Liq. boiled off element, so total cost and NPV are unchanged.
 
-**Shipping.** Capex = Interface row 97 x delivered volume, without CPI. Opex = (rows 92-96 + row 98) x purchase CPI factor x delivered volume. Flat shipping assumptions follow the same CPI rules. Route flags B41:C43 are informational only. Source shipping opex must not already include the same CPI escalation.
+**Shipping.** For uploaded Interface workbooks, each year is read exclusively from row 79; opex rows 92-96 + 98 and capex row 97 are then read from that exact same column. Uploaded and flat shipping assumptions are treated as real pre-CPI USD/MMBtu values. Nominal opex = (rows 92-96 + row 98) x shipping CPI factor; nominal capex = Interface row 97 x the same shipping CPI factor. Each nominal unit cost is multiplied by delivered volume. A real capex curve that declines exactly by inverse inflation therefore becomes nominal-flat. Route flags B41:C43 are informational only. Source shipping values must not already include the same CPI escalation.
 
 **Annual-average mode.** Each selected index/year uses the arithmetic mean of all four uploaded quarterly prices, (Q1+Q2+Q3+Q4)/4. Missing quarters raise an error rather than averaging a partial year. Enter cargo counts separately for each year. The internal January row is only an annual bucket: it does not select the Q1 price. Discounting and CPI remain annual. The existing monthly/quarterly schedule is retained as the alternative mode.
 
@@ -853,19 +877,19 @@ with explanation_tab:
 """)
  if not result:st.info('Calculate a case to see the numerical audit trail.')
  else:
-  st.info(f"Sales CPI first included year: {ci['sales_base']+1}. Purchase/shipping CPI first included year: {ci['purchase_base']}. EPA real reference year: {ci['epa_real_base']}. Discount back to: {ci['discount_year']}. Price mode: {ci['price_mode']}.")
+  st.info(f"Sales CPI first included year: {ci['sales_base']+1}. Purchase fee CPI first included year: {ci['purchase_base']}. Shipping CPI base year: {ci['shipping_base']}. EPA real reference year: {ci['epa_real_base']}. Discount back to: {ci['discount_year']}. Price mode: {ci['price_mode']}.")
   y=st.selectbox('Inspect year',sorted(d.Year.unique()),key='explain_year');yd=d[d.Year==y].copy();v=yd['Delivered MMBtu'].sum()
   st.markdown('#### Annual component reconciliation')
   rows=[{'Component':name,'Nominal USD':sgn*yd[c].sum(),'USD / delivered MMBtu':sgn*yd[c].sum()/v,'PV USD':sgn*yd['PV '+c].sum()} for name,c,key,sgn in COMPONENTS]
   rows.append({'Component':'Net cash flow / PV','Nominal USD':yd['Cash Flow USD'].sum(),'USD / delivered MMBtu':yd['Cash Flow USD'].sum()/v,'PV USD':yd['PV Cash Flow USD'].sum()});table(pd.DataFrame(rows))
   st.markdown('#### Monthly inputs and intermediate factors')
-  table(yd[['Year','Month','Cargoes','Loaded MMBtu','Boiled-off MMBtu','Delivered MMBtu','EPA Purchase Base Volume MMBtu','EPA Sales Price Real','EPA Purchase Price Real','EPA Inflation Factor','EPA Sales Price','EPA Purchase Price','BoG Index Coefficient Sales','BoG Index Coefficient Purchase','Sales CPI Factor','Purchase CPI Factor','Shipping CPI Factor','Raw Shipping Opex USD/MMBtu','Raw Shipping Capex USD/MMBtu','Discount Factor']])
+  table(yd[['Year','Month','Cargoes','Loaded MMBtu','Boiled-off MMBtu','Delivered MMBtu','EPA Purchase Base Volume MMBtu','EPA Sales Price Real','EPA Purchase Price Real','EPA Inflation Factor','EPA Sales Price','EPA Purchase Price','BoG Index Coefficient Sales','BoG Index Coefficient Purchase','Sales CPI Factor','Purchase CPI Factor','Shipping CPI Factor','Raw Shipping Opex USD/MMBtu','Raw Shipping Capex USD/MMBtu','Nominal Shipping Opex USD/MMBtu','Nominal Shipping Capex USD/MMBtu','Discount Factor']])
   st.markdown('#### Annual cash flows and discounting')
   audit=a.copy();audit['Discount Factor']=(1+ci['disc'])**(audit.Year-ci['discount_year']);table(audit)
   st.markdown('#### CPI factors by year')
-  table(pd.DataFrame({'Year':sorted(ci['sales_cpi']),'Sales CPI factor':[ci['sales_cpi'][k] for k in sorted(ci['sales_cpi'])],'Purchase / shipping CPI factor':[ci['purchase_cpi'][k] for k in sorted(ci['sales_cpi'])]}))
+  table(pd.DataFrame({'Year':sorted(ci['sales_cpi']),'Sales CPI factor':[ci['sales_cpi'][k] for k in sorted(ci['sales_cpi'])],'Purchase fee CPI factor':[ci['purchase_cpi'][k] for k in sorted(ci['sales_cpi'])],'Shipping CPI factor':[ci['shipping_cpi'][k] for k in sorted(ci['sales_cpi'])]}))
   st.markdown('#### Annual hedge residuals (nominal USD)');table(hedge_table(d))
   st.download_button('Download calculation detail (CSV)',d.to_csv(index=False).encode('utf-8'),'LNG_case_calculation_detail.csv','text/csv',key='audit_csv')
 
-st.markdown('<div class="footer"><span>LNG BUSINESS CASE · STUDIO</span><span>Annual discounting · Split liquefaction BoG fixed/CPI · Deployment-safe theme</span></div>',unsafe_allow_html=True)
+st.markdown('<div class="footer"><span>LNG BUSINESS CASE · STUDIO</span><span>Annual discounting · Independent shipping CPI base · CPI-adjusted opex and capex</span></div>',unsafe_allow_html=True)
 
