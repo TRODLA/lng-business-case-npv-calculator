@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """LNG Business Case | redesigned single-file Streamlit application.
-Run: python -m streamlit run lng_business_case_studio_v33.py
+Run: python -m streamlit run lng_business_case_studio_v34.py
 Dependencies: streamlit>=1.41, pandas, plotly, numpy, python-pptx, matplotlib.
-V33: V32 baseline plus independent shipping CPI base year and annual shipping inflation curve.
+V34: V33 baseline plus pure all-in Brent slope conversion for component-matched sales formulas.
 Separate leg CPI timing, CCT2 preset, annual-average cargo programme,
-component-matched sales formula and explicit annual/PV hedge reconciliation.
+component-matched sales formula, all-in Brent slope conversion and explicit annual/PV hedge reconciliation.
 Optional offline brand asset: equinor_logo.svg or equinor_logo.png beside this file.
 The valuation conventions match the supplied calculator: annual discounting,
 no taxation, separate sales/purchase CPI years and independent discount year.
@@ -386,6 +386,20 @@ def match_sales_components(inputs):
  sales['fixed']=(d['PV Liquefaction Fixed Cost USD']+d['PV Liquefaction Boil-off Fixed Cost USD']+d['PV Shipping Capex USD']).sum()/volume
  sales['cpi']=(d['PV Liquefaction CPI Cost USD']+d['PV Liquefaction Boil-off CPI Cost USD']+d['PV Shipping Opex USD']).sum()/cpi_basis
  z['sal']=sales;dx,ax=calculate(**z)
+ # Brent contracts are conventionally easier to read as one all-in slope.
+ # Convert the complete matched sales value (index + fixed + CPI-linked)
+ # into a PV-equivalent Brent slope and zero the additive elements.
+ if 'brent' in str(sales['market']).lower():
+  brent_basis=(dx['EPA Sales Price']*dx['PV Delivered MMBtu']).sum()
+  matched_sales_pv=(dx['PV Sales Revenue USD']+dx['PV Boil-off Compensation Revenue USD']+dx['PV Fixed Revenue USD']+dx['PV CPI Revenue USD']).sum()
+  if abs(brent_basis)<1e-12:raise ValueError('Cannot convert the matched formula to an all-in Brent slope because the discounted Brent basis is zero.')
+  sales['slope']=matched_sales_pv/brent_basis
+  sales['fixed']=0.
+  sales['cpi']=0.
+  sales['matched_display']='all_in_brent_slope'
+  z['sal']=sales;dx,ax=calculate(**z)
+ else:
+  sales['matched_display']='slope_plus_fixed_cpi'
  return sales,dx,ax
 
 def compact_price_formula(f):
@@ -393,6 +407,8 @@ def compact_price_formula(f):
   return (' + ' if v>=0 else ' - ')+f'{abs(v):.4f}'.rstrip('0').rstrip('.')
  market=str(f['market'])
  slope=f"{f['slope']*100:.4f}".rstrip('0').rstrip('.')+'%'
+ if f.get('matched_display')=='all_in_brent_slope' or ('brent' in market.lower() and abs(f.get('fixed',0.))<1e-12 and abs(f.get('cpi',0.))<1e-12):
+  return f"{slope} x {market}"
  return f"{slope} x {market}{signed(f['fixed'])}{signed(f['cpi'])} (CPI)"
 def apply_purchase_preset():
  if st.session_state.get('purchase_preset')=='CCT2':
@@ -411,10 +427,10 @@ def apply_matched_sales():
   st.session_state['sales_preset']='Custom'
 
 # ------------------------- Theme and application shell -------------------
-if st.session_state.get('studio_engine_version')!='v33':
+if st.session_state.get('studio_engine_version')!='v34':
  for old_key in ['ship','studio_result','studio_ppt','studio_be','studio_hedge']:
   st.session_state.pop(old_key,None)
- st.session_state.studio_engine_version='v33'
+ st.session_state.studio_engine_version='v34'
 with st.container(key='masthead'):
  brand_col,theme_col=st.columns([5,1],vertical_alignment='center')
  with brand_col:brand_slot=st.empty()
@@ -781,11 +797,14 @@ with overview_tab:
    if 'studio_hedge' in st.session_state:
     h=st.session_state.studio_hedge
     ht=totals(h['detail'],h['annual']);matched_formula=compact_price_formula(h['formula'])
+    is_all_in_brent=h['formula'].get('matched_display')=='all_in_brent_slope'
+    formula_note='All matched sales value converted to one PV-equivalent Brent slope' if is_all_in_brent else 'Slope x selected price index + fixed no-CPI + CPI-linked element'
     result_left,result_right=st.columns([1,2])
     with result_left:st.metric('NPV with matched sales formula',money(ht['npv']))
     with result_right:
-     st.markdown(f'<div class="matched-formula-card"><div class="matched-formula-label">Matched sales price formula</div><div class="matched-formula-value">{esc(matched_formula)}</div><div class="matched-formula-note">Slope x selected price index + fixed no-CPI + CPI-linked element</div></div>',unsafe_allow_html=True)
+     st.markdown(f'<div class="matched-formula-card"><div class="matched-formula-label">Matched sales price formula</div><div class="matched-formula-value">{esc(matched_formula)}</div><div class="matched-formula-note">{esc(formula_note)}</div></div>',unsafe_allow_html=True)
     st.caption('Preview only until applied. Apply the full-precision coefficients to the sales leg, then recalculate the main case.')
+    if is_all_in_brent:st.info('Brent conversion: fixed and CPI-linked sales elements are set to zero and absorbed into one PV-equivalent Brent slope. Total matched NPV remains zero; the separate fixed/CPI hedge buckets are intentionally no longer individually zero after this conversion.')
     st.button('Apply matched formula to sales leg',key='hedge_apply',on_click=apply_matched_sales,use_container_width=True)
     st.markdown('**Annual residuals for the matched formula (USD)**');table(hedge_table(h['detail']))
     hp=hedge_table(h['detail'],pv=True)
@@ -873,7 +892,7 @@ with explanation_tab:
 
 **NPV.** Annual cash flow = total income - total costs. PV = annual cash flow / (1+discount rate)^(cash-flow year - Discount back to year). NPV is the sum of annual PVs. NPV/MMBtu divides by discounted delivered volume. No tax is applied. Extrinsic value remains additional income if non-zero.
 
-**Component-matched sales formula.** The matching tool solves the separate sales BoG slope after subtracting EPA base sales from the index cost target; EPA base sales remains EPA price x delivered volume. Fixed fee and CPI fee matching are unchanged. This is not a guarantee of an annual hedge. Different index curves, changing shipping assumptions or differing CPI patterns can leave annual residuals even when discounted totals match. The annual residual table makes those differences visible. Non-zero extrinsic value is shown separately and is not silently absorbed into the three matched buckets.
+**Component-matched sales formula.** HH and TTF retain the existing three-part matched structure: slope x index + fixed no-CPI + CPI-linked element. For a Brent sales index, the app first matches the index, fixed and CPI buckets, then converts the complete matched sales PV into one all-in Brent slope: all-in slope = PV of matched sales income / PV Brent index-volume basis. The Brent fixed and CPI-linked elements are set to zero. This preserves zero total matched NPV, but the displayed fixed and CPI hedge buckets are intentionally no longer individually zero after conversion because their value has moved into the Brent slope. Different index curves or CPI patterns can still leave annual residuals. Non-zero extrinsic value remains separate and is not absorbed.
 """)
  if not result:st.info('Calculate a case to see the numerical audit trail.')
  else:
@@ -891,5 +910,6 @@ with explanation_tab:
   st.markdown('#### Annual hedge residuals (nominal USD)');table(hedge_table(d))
   st.download_button('Download calculation detail (CSV)',d.to_csv(index=False).encode('utf-8'),'LNG_case_calculation_detail.csv','text/csv',key='audit_csv')
 
-st.markdown('<div class="footer"><span>LNG BUSINESS CASE · STUDIO</span><span>Annual discounting · Independent shipping CPI base · CPI-adjusted opex and capex</span></div>',unsafe_allow_html=True)
+st.markdown('<div class="footer"><span>LNG BUSINESS CASE · STUDIO</span><span>Annual discounting · All-in Brent matching · Independent shipping CPI base</span></div>',unsafe_allow_html=True)
+
 
