@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """LNG Business Case | redesigned single-file Streamlit application.
-Run: python -m streamlit run lng_business_case_studio_v28.py
+Run: python -m streamlit run lng_business_case_studio_v29.py
 Dependencies: streamlit>=1.41, pandas, plotly, numpy, python-pptx, matplotlib.
-V28: V27 baseline plus split fixed/CPI liquefaction boil-off presentation and enhanced matched-formula display.
+V29: V27 baseline plus split fixed/CPI liquefaction boil-off, enhanced matched-formula display, shipping horizon capped at 2050 and deployment-safe input styling.
 Separate leg CPI timing, CCT2 preset, annual-average cargo programme,
 component-matched sales formula and explicit annual/PV hedge reconciliation.
 Optional offline brand asset: equinor_logo.svg or equinor_logo.png beside this file.
@@ -106,7 +106,9 @@ def shipping(raw):
  for k in range(9,251):
   for r in range(79,83):
    y=yr(c.get(f'{col(k)}{r}'))
-   if y:ys[k]=y;break
+   if y:
+    if y<=2050:ys[k]=y
+    break
  def number(ref):
   v=c.get(ref)
   if not isinstance(v,(int,float)) or isinstance(v,bool):raise ValueError(f'Interface!{ref}: missing numeric cached value. Recalculate and save the workbook in Excel.')
@@ -399,10 +401,10 @@ def apply_matched_sales():
   st.session_state['sales_preset']='Custom'
 
 # ------------------------- Theme and application shell -------------------
-if st.session_state.get('studio_engine_version')!='v28':
+if st.session_state.get('studio_engine_version')!='v29':
  for old_key in ['ship','studio_result','studio_ppt','studio_be','studio_hedge']:
   st.session_state.pop(old_key,None)
- st.session_state.studio_engine_version='v28'
+ st.session_state.studio_engine_version='v29'
 with st.container(key='masthead'):
  brand_col,theme_col=st.columns([5,1],vertical_alignment='center')
  with brand_col:brand_slot=st.empty()
@@ -445,8 +447,29 @@ h1,h2,h3,h4{{color:{TEXT}!important;letter-spacing:-.025em}}
 [data-testid="stExpander"] summary{{color:{TEXT}}}
 .deal-label{{font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:750;color:{MUTED};margin-bottom:20px}}
 .formula-preview{{background:{FIELD};border-left:3px solid {'#70d7c3' if DARK else '#087365'};padding:14px 16px;border-radius:0 8px 8px 0;color:{TEXT};font-size:12px;line-height:1.8;margin-top:14px;min-height:65px}}
-.matched-formula-card{{background:linear-gradient(120deg,#123b35,#16483f);border:1px solid #2b8f79;border-radius:12px;padding:18px 20px;min-height:130px;display:flex;flex-direction:column;justify-content:center}}.matched-formula-label{{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8fdcc9;font-weight:700;margin-bottom:10px}}.matched-formula-value{{font-size:clamp(1.35rem,2.2vw,2.15rem);line-height:1.25;font-weight:700;color:#9bf0d8;overflow-wrap:anywhere}}.matched-formula-note{{font-size:11px;color:#acd3c8;margin-top:9px}}
 [data-baseweb="input"],[data-baseweb="base-input"],[data-baseweb="select"]>div,[data-baseweb="textarea"]{{background:{FIELD}!important;color:{TEXT}!important;border-color:{GRID}!important;border-radius:8px}}
+.matched-formula-card{{background:linear-gradient(120deg,#123b35,#16483f);border:1px solid #2b8f79;border-radius:12px;padding:18px 20px;min-height:130px;display:flex;flex-direction:column;justify-content:center}}
+.matched-formula-label{{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8fdcc9;font-weight:700;margin-bottom:10px}}
+.matched-formula-value{{font-size:clamp(1.35rem,2.2vw,2.15rem);line-height:1.25;font-weight:700;color:#9bf0d8;overflow-wrap:anywhere}}
+.matched-formula-note{{font-size:11px;color:#acd3c8;margin-top:9px}}
+/* Deployment-safe BaseWeb input styling: Radix/browser defaults must not paint white fields. */
+[data-testid="stNumberInput"] [data-baseweb="input"],
+[data-testid="stTextInput"] [data-baseweb="input"],
+[data-testid="stDateInput"] [data-baseweb="input"],
+[data-testid="stTimeInput"] [data-baseweb="input"],
+[data-testid="stNumberInput"] [data-baseweb="base-input"],
+[data-testid="stTextInput"] [data-baseweb="base-input"]{{background:{FIELD}!important;color:{TEXT}!important;border-color:{GRID}!important;color-scheme:{'dark' if DARK else 'light'}!important}}
+[data-testid="stNumberInput"] input,
+[data-testid="stTextInput"] input,
+[data-testid="stDateInput"] input,
+[data-testid="stTimeInput"] input,
+input[type="number"],input[type="text"]{{background:{FIELD}!important;background-color:{FIELD}!important;color:{TEXT}!important;-webkit-text-fill-color:{TEXT}!important;caret-color:{TEXT}!important;border-color:{GRID}!important;box-shadow:inset 0 0 0 1000px {FIELD}!important;color-scheme:{'dark' if DARK else 'light'}!important}}
+[data-testid="stNumberInput"] input:focus,
+[data-testid="stTextInput"] input:focus{{background:{FIELD}!important;background-color:{FIELD}!important;color:{TEXT}!important;-webkit-text-fill-color:{TEXT}!important;box-shadow:inset 0 0 0 1000px {FIELD}!important}}
+input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{{-webkit-text-fill-color:{TEXT}!important;box-shadow:0 0 0 1000px {FIELD} inset!important;-webkit-box-shadow:0 0 0 1000px {FIELD} inset!important;caret-color:{TEXT}!important}}
+[data-testid="stNumberInput"] button{{background:{FIELD}!important;color:{TEXT}!important;border-color:{GRID}!important}}
+[data-testid="stNumberInput"] button svg{{fill:{TEXT}!important;color:{TEXT}!important}}
+
 input,textarea{{color:{TEXT}!important;caret-color:{TEXT}!important}}input::placeholder{{color:{MUTED}!important}}
 [data-baseweb="select"] span,[data-baseweb="select"] svg{{color:{TEXT}!important}}
 [data-baseweb="popover"] [role="listbox"],[data-baseweb="menu"],[role="option"]{{background:{PANEL}!important;color:{TEXT}!important}}
@@ -637,7 +660,7 @@ with setup_tab:
       except Exception as e:st.error(f'Shipping workbook: {e}')
      if 'ship' in st.session_state:
       shipdf,boil,routes=st.session_state.ship;st.caption(f"Loaded: {st.session_state.get('ship_name','Shipping workbook')}")
-     st.caption(f'Interface: capex row 97; opex rows 92-96 + 98. First shipping CPI rate: {purchase_base}. Boil-off: M45.')
+     st.caption(f'Interface: capex row 97; opex rows 92-96 + 98; years through 2050 only. First shipping CPI rate: {purchase_base}. Boil-off: M45.')
      if not routes.empty:st.dataframe(routes,hide_index=True,use_container_width=True)
      st.caption('Route flags are informational only. Uploaded opex is treated as a pre-CPI source value.')
     st.metric('Sales cargo size',f'{cargo*(1-boil):,.0f} MMBtu',f'{boil:.3%} physical boil-off',delta_color='off')
@@ -818,7 +841,7 @@ with explanation_tab:
 
 **Fixed fees.** Fixed sales income = sales fixed fee x delivered volume. Purchase no-CPI fee = purchase fixed fee x delivered volume. CPI income = sales CPI fee x sales CPI factor x delivered volume. CPI purchase fee = purchase CPI fee x purchase CPI factor x delivered volume.
 
-**Liquefaction boiled off.** The total calculation remains [(fixed fee + CPI-adjusted fee)/(1-b) - (fixed fee + CPI-adjusted fee)] x delivered volume. V28 displays the exact same total as two components: Liq. BoG no CPI = fixed liquefaction fee x boiled-off volume; Liq. BoG CPI = CPI-adjusted liquefaction fee x boiled-off volume. Their sum equals the former single Liq. boiled off element, so total cost and NPV are unchanged. The no-CPI part belongs to the fixed reconciliation bucket and the CPI part belongs to the CPI reconciliation bucket.
+**Liquefaction boiled off.** The total calculation remains [(fixed fee + CPI-adjusted fee)/(1-b) - (fixed fee + CPI-adjusted fee)] x delivered volume. V29 displays the exact same total as two components: Liq. BoG no CPI = fixed liquefaction fee x boiled-off volume; Liq. BoG CPI = CPI-adjusted liquefaction fee x boiled-off volume. Their sum equals the former single Liq. boiled off element, so total cost and NPV are unchanged.
 
 **Shipping.** Capex = Interface row 97 x delivered volume, without CPI. Opex = (rows 92-96 + row 98) x purchase CPI factor x delivered volume. Flat shipping assumptions follow the same CPI rules. Route flags B41:C43 are informational only. Source shipping opex must not already include the same CPI escalation.
 
@@ -844,4 +867,5 @@ with explanation_tab:
   st.markdown('#### Annual hedge residuals (nominal USD)');table(hedge_table(d))
   st.download_button('Download calculation detail (CSV)',d.to_csv(index=False).encode('utf-8'),'LNG_case_calculation_detail.csv','text/csv',key='audit_csv')
 
-st.markdown('<div class="footer"><span>LNG BUSINESS CASE · STUDIO</span><span>Annual discounting · Split liquefaction BoG fixed/CPI · Component hedge reconciliation</span></div>',unsafe_allow_html=True)
+st.markdown('<div class="footer"><span>LNG BUSINESS CASE · STUDIO</span><span>Annual discounting · Split liquefaction BoG fixed/CPI · Deployment-safe theme</span></div>',unsafe_allow_html=True)
+
